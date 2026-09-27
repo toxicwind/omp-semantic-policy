@@ -4,7 +4,10 @@ dist/*
 !dist/index.js
 !dist/policy/
 !dist/policy/index.js
-coverage/
+# Anchored: an unanchored `coverage/` also swallows the coverage SOURCE
+# directory at src/adapters/omp/coverage/, which is imported by
+# registerOmpPolicyRuntime.ts and re-exported by src/adapters/omp/index.ts.
+/coverage/
 *.tsbuildinfo
 
 .env
