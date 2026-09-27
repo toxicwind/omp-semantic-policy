@@ -3,6 +3,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import type { InstructionSource } from "../../../policy/index.js";
 import { hasGitMarker } from "./findGitProjectRoot.js";
+import { countEntry, createScanBudget, MAX_SCAN_DEPTH, type ScanBudget } from "./scanBudget.js";
 
 const INSTRUCTION_FILENAMES: Readonly<Record<string, true>> = {
   "AGENTS.md": true,
@@ -31,29 +32,10 @@ const LINKED_DIRECTORY_FILE_EXTENSIONS: Readonly<Record<string, true>> = {
 };
 
 /**
- * Budget for the project walk.
- *
- * A worktree is an arbitrary directory tree, and this walk runs on the
- * critical path of `before_agent_start` and of every `tool_call`. Without a
- * bound, a root with a large tree (a monorepo, or a home directory that some
- * tool left a stub `.git` in) spends tens of seconds inside a handler that the
- * host abandons at 30s. The walk therefore stops and returns what it found.
- * Instruction files live near a root or a few levels down, so the depth cap
- * costs nothing in practice; the entry and time caps only ever bite on roots
- * that no human would expect to be scanned in full.
+ * The project walk is bounded by the shared `ScanBudget`, because a worktree
+ * is an arbitrary directory tree and this walk runs on the critical path of
+ * `before_agent_start` and of every `tool_call`. See `./scanBudget.ts`.
  */
-const MAX_SCAN_DEPTH = 6;
-const MAX_SCAN_ENTRIES = 20_000;
-const MAX_SCAN_DURATION_MS = 2_000;
-
-interface ScanBudget {
-  entries: number;
-  readonly deadline: number;
-}
-
-function exhausted(budget: ScanBudget): boolean {
-  return budget.entries >= MAX_SCAN_ENTRIES || Date.now() >= budget.deadline;
-}
 
 /** Discover project instructions while excluding ancestors and nested repositories. */
 export async function discoverProjectInstructionSources(
@@ -61,7 +43,7 @@ export async function discoverProjectInstructionSources(
 ): Promise<readonly InstructionSource[]> {
   const canonicalRoot = await realpath(projectRoot);
   const sources: InstructionSource[] = [];
-  const budget: ScanBudget = { entries: 0, deadline: Date.now() + MAX_SCAN_DURATION_MS };
+  const budget = createScanBudget();
   await walkProject(canonicalRoot, canonicalRoot, 0, sources, budget);
   return sources.sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -142,10 +124,9 @@ async function walkProject(
   entries.sort((left, right) => left.name.localeCompare(right.name));
 
   for (const entry of entries) {
-    if (exhausted(budget)) {
+    if (!countEntry(budget)) {
       return;
     }
-    budget.entries += 1;
     const entryPath = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;

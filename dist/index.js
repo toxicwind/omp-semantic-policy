@@ -3116,6 +3116,21 @@ import { createHash as createHash4 } from "crypto";
 import { lstat as lstat4, open as open2, readdir as readdir2, realpath as realpath5 } from "fs/promises";
 import { extname as extname2, join as join4, relative as relative5, resolve as resolve7, sep as sep5 } from "path";
 
+// src/adapters/omp/projects/scanBudget.ts
+var MAX_SCAN_DEPTH = 6;
+var MAX_SCAN_ENTRIES = 20000;
+var MAX_SCAN_DURATION_MS = 2000;
+function createScanBudget() {
+  return { entries: 0, deadline: Date.now() + MAX_SCAN_DURATION_MS };
+}
+function exhausted(budget) {
+  return budget.entries >= MAX_SCAN_ENTRIES || Date.now() >= budget.deadline;
+}
+function countEntry(budget) {
+  budget.entries += 1;
+  return !exhausted(budget);
+}
+
 // src/adapters/omp/projects/discoverInstructionSources.ts
 import { createHash as createHash3 } from "crypto";
 import { lstat as lstat3, readFile as readFile2, readdir, realpath as realpath4 } from "fs/promises";
@@ -3213,16 +3228,10 @@ var LINKED_DIRECTORY_FILE_EXTENSIONS = {
   ".rules": true,
   ".txt": true
 };
-var MAX_SCAN_DEPTH = 6;
-var MAX_SCAN_ENTRIES = 20000;
-var MAX_SCAN_DURATION_MS = 2000;
-function exhausted(budget) {
-  return budget.entries >= MAX_SCAN_ENTRIES || Date.now() >= budget.deadline;
-}
 async function discoverProjectInstructionSources(projectRoot) {
   const canonicalRoot = await realpath4(projectRoot);
   const sources = [];
-  const budget = { entries: 0, deadline: Date.now() + MAX_SCAN_DURATION_MS };
+  const budget = createScanBudget();
   await walkProject(canonicalRoot, canonicalRoot, 0, sources, budget);
   return sources.sort((left, right) => left.path.localeCompare(right.path));
 }
@@ -3281,10 +3290,9 @@ async function walkProject(projectRoot, directory, depth, sources, budget) {
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
-    if (exhausted(budget)) {
+    if (!countEntry(budget)) {
       return;
     }
-    budget.entries += 1;
     const entryPath = join3(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
@@ -3436,7 +3444,7 @@ function createStandardsSourceResolver(options) {
 }
 async function collectProjectCandidates(projectRoot, existingPaths, sanitize) {
   const paths = [];
-  await walkCandidatePaths(projectRoot, projectRoot, paths);
+  await walkCandidatePaths(projectRoot, projectRoot, paths, 0, createScanBudget());
   paths.sort((left, right) => left.localeCompare(right));
   const candidates = [];
   let previewBudget = MAX_PREVIEW_TOTAL;
@@ -3458,19 +3466,22 @@ async function collectProjectCandidates(projectRoot, existingPaths, sanitize) {
   }
   return candidates;
 }
-async function walkCandidatePaths(projectRoot, directory, paths) {
+async function walkCandidatePaths(projectRoot, directory, paths, depth, budget) {
   const entries = await readdir2(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
+    if (!countEntry(budget)) {
+      return;
+    }
     const entryPath = join4(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
     }
     if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES2[entry.name] === true || entryPath !== projectRoot && await hasGitMarker(entryPath)) {
+      if (IGNORED_DIRECTORIES2[entry.name] === true || depth >= MAX_SCAN_DEPTH || entryPath !== projectRoot && await hasGitMarker(entryPath)) {
         continue;
       }
-      await walkCandidatePaths(projectRoot, entryPath, paths);
+      await walkCandidatePaths(projectRoot, entryPath, paths, depth + 1, budget);
       continue;
     }
     if (!entry.isFile()) {

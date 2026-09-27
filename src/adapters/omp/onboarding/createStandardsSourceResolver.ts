@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import { extname, join, relative, resolve, sep } from "node:path";
 import type { InstructionSource } from "../../../policy/index.js";
+import { countEntry, createScanBudget, MAX_SCAN_DEPTH, type ScanBudget } from "../projects/scanBudget.js";
 import { hasGitMarker } from "../projects/index.js";
 
 const IGNORED_DIRECTORIES: Readonly<Record<string, true>> = {
@@ -175,7 +176,7 @@ async function collectProjectCandidates(
   sanitize: (text: string) => string,
 ): Promise<readonly ProjectCandidate[]> {
   const paths: string[] = [];
-  await walkCandidatePaths(projectRoot, projectRoot, paths);
+  await walkCandidatePaths(projectRoot, projectRoot, paths, 0, createScanBudget());
   paths.sort((left, right) => left.localeCompare(right));
 
   const candidates: ProjectCandidate[] = [];
@@ -210,11 +211,16 @@ async function walkCandidatePaths(
   projectRoot: string,
   directory: string,
   paths: string[],
+  depth: number,
+  budget: ScanBudget,
 ): Promise<void> {
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
 
   for (const entry of entries) {
+    if (!countEntry(budget)) {
+      return;
+    }
     const entryPath = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
@@ -222,11 +228,12 @@ async function walkCandidatePaths(
     if (entry.isDirectory()) {
       if (
         IGNORED_DIRECTORIES[entry.name] === true ||
+        depth >= MAX_SCAN_DEPTH ||
         (entryPath !== projectRoot && (await hasGitMarker(entryPath)))
       ) {
         continue;
       }
-      await walkCandidatePaths(projectRoot, entryPath, paths);
+      await walkCandidatePaths(projectRoot, entryPath, paths, depth + 1, budget);
       continue;
     }
     if (!entry.isFile()) {

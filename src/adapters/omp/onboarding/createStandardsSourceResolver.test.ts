@@ -112,6 +112,33 @@ describe("model-assisted standards discovery", () => {
     repository.close();
   });
 
+  test("does not offer candidate files from below its depth budget", async () => {
+    const fixture = await createFixture();
+    const projectRoot = join(fixture, "project");
+    await createGitRepository(projectRoot);
+    const shallow = join(projectRoot, "guidance");
+    const deep = join(projectRoot, "a", "b", "c", "d", "e", "f", "g");
+    await mkdir(shallow, { recursive: true });
+    await mkdir(deep, { recursive: true });
+    await writeFile(join(shallow, "engineering.md"), "Shallow rule.\n");
+    await writeFile(join(deep, "generated.md"), "Deep rule.\n");
+
+    // This walk runs on before_agent_start and on every tool_call, so its cost
+    // has to be independent of how large the tree below the project root is.
+    const prompts: string[] = [];
+    const resolver = createStandardsSourceResolver({
+      getRuntimeContext: () => [],
+      complete: async (prompt) => {
+        prompts.push(prompt);
+        return JSON.stringify({ projectPaths: [], runtimeExcerpts: [] });
+      },
+    });
+    await resolver.resolve({ projectRoot, existingSources: [], force: true });
+
+    expect(prompts[0]).toContain("Shallow rule.");
+    expect(prompts[0]).not.toContain("Deep rule.");
+  });
+
   test("defaults the scan budget below the host extension-handler timeout", async () => {
     const fixture = await createFixture();
     const projectRoot = join(fixture, "project");
