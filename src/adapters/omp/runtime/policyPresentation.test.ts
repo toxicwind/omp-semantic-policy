@@ -62,6 +62,7 @@ describe("policy session presentation", () => {
           launchpad_write: "execute",
           read: "execute",
         },
+        scanTimeoutMs: 5000,
       }),
     ).toEqual({
       showStatus: false,
@@ -75,6 +76,7 @@ describe("policy session presentation", () => {
         launchpad_write: "execute",
         read: "execute",
       },
+      scanTimeoutMs: 5000,
     });
   });
 

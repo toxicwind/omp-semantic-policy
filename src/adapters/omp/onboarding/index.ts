@@ -6,6 +6,7 @@ export {
 } from "./createProjectOnboarder.js";
 export {
   createStandardsSourceResolver,
+  DEFAULT_SCAN_TIMEOUT_MS,
   type StandardsModelCompletion,
   type StandardsSourceResolutionRequest,
   type StandardsSourceResolver,

@@ -10,6 +10,7 @@ import type { PolicyAction, PolicyDecision } from "../../../policy/index.js";
 import type { PolicyOperation } from "../../../policy/actions/types.js";
 import { redactText } from "../../typesafe/redactProviderState.js";
 import { brandPolicyText } from "../policyIdentity.js";
+import { DEFAULT_SCAN_TIMEOUT_MS } from "../onboarding/createStandardsSourceResolver.js";
 
 const PLUGIN_NAME = "omp-semantic-policy";
 
@@ -36,6 +37,17 @@ export interface PolicyRuntimeSettings {
   readonly disabledToolCalls: readonly string[];
   readonly enabledToolCalls: readonly string[];
   readonly toolOperations: Readonly<Partial<Record<string, PolicyOperation>>>;
+  /**
+   * Budget for the model-assisted standards-source scan, in milliseconds.
+   *
+   * This MUST stay comfortably below the host's own extension-handler
+   * timeout. The host abandons a handler at its limit, and an abandoned
+   * handler never runs its own failure path: the backoff that would stop
+   * the next attempt from repeating the same stall never gets registered.
+   * A budget equal to (or above) the host's is therefore a permanent
+   * per-turn stall, not a slow-but-recoverable one.
+   */
+  readonly scanTimeoutMs: number;
 }
 
 export interface PolicyStatusBarController {
@@ -63,7 +75,8 @@ export async function loadPolicyRuntimeSettings(
     overrides.confirmationThreshold === undefined ||
     overrides.disabledToolCalls === undefined ||
     overrides.enabledToolCalls === undefined ||
-    overrides.toolOperations === undefined
+    overrides.toolOperations === undefined ||
+    overrides.scanTimeoutMs === undefined
   ) {
     try {
       configured = await getPluginSettings(PLUGIN_NAME, cwd);
@@ -95,6 +108,7 @@ export async function loadPolicyRuntimeSettings(
     disabledToolCalls,
     enabledToolCalls,
     toolOperations,
+    scanTimeoutMs: normalizeScanTimeoutMs(overrides.scanTimeoutMs ?? configured.scanTimeoutMs),
   };
 }
 
@@ -102,6 +116,27 @@ function normalizeConfirmationThreshold(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1
     ? value
     : 1;
+}
+
+/**
+ * Hard ceiling on the configurable scan budget, in milliseconds.
+ *
+ * The OMP host abandons an extension handler at 30s. A scan budget at or
+ * above that is not "slow", it is permanently unrecoverable: the host
+ * discards the handler, so the resolver's own backoff never registers and
+ * every subsequent turn pays the full budget again. Clamping here means a
+ * misconfigured value degrades to a bounded one instead of reintroducing
+ * the per-turn stall.
+ */
+const MAX_SCAN_TIMEOUT_MS = 15_000;
+
+const MIN_SCAN_TIMEOUT_MS = 1_000;
+
+function normalizeScanTimeoutMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SCAN_TIMEOUT_MS;
+  }
+  return Math.min(MAX_SCAN_TIMEOUT_MS, Math.max(MIN_SCAN_TIMEOUT_MS, Math.round(value)));
 }
 
 function normalizeToolCallNames(value: unknown): readonly string[] {

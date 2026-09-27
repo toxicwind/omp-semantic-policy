@@ -4,7 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPolicyRepository } from "../persistence/index.js";
 import { createProjectOnboarder } from "./createProjectOnboarder.js";
-import { createStandardsSourceResolver } from "./createStandardsSourceResolver.js";
+import {
+  createStandardsSourceResolver,
+  DEFAULT_SCAN_TIMEOUT_MS,
+} from "./createStandardsSourceResolver.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -107,10 +110,81 @@ describe("model-assisted standards discovery", () => {
     expect(repository.getActiveSnapshot(await realpath(projectRoot))?.sources).toHaveLength(1);
     repository.close();
   });
+
+  test("defaults the scan budget below the host extension-handler timeout", async () => {
+    const fixture = await createFixture();
+    const projectRoot = join(fixture, "project");
+    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await writeFile(join(projectRoot, "AGENTS.md"), "Never commit automatically.\n");
+
+    // The OMP host abandons an extension handler at 30s. A scan budget at or
+    // above that is not merely slow: the host discards the handler before this
+    // module's own abort lands, so the backoff below never registers and every
+    // subsequent turn pays the full budget again. This is the regression that
+    // made each subagent turn cost 7.6x wall time.
+    expect(DEFAULT_SCAN_TIMEOUT_MS).toBeLessThan(30_000);
+
+    const budgets: number[] = [];
+    const restore = captureScanBudgets(budgets);
+    try {
+      await createStandardsSourceResolver({
+        getRuntimeContext: () => [],
+        complete: async () => JSON.stringify({ projectPaths: [], runtimeExcerpts: [] }),
+      }).resolve({ projectRoot, existingSources: [], force: false });
+    } finally {
+      restore();
+    }
+
+    expect(budgets).toEqual([DEFAULT_SCAN_TIMEOUT_MS]);
+  });
+
+  test("backs off after a scan times out instead of re-entering the model", async () => {
+    const fixture = await createFixture();
+    const projectRoot = join(fixture, "project");
+    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await writeFile(join(projectRoot, "AGENTS.md"), "Never commit automatically.\n");
+
+    let completionCount = 0;
+    const resolver = createStandardsSourceResolver({
+      getRuntimeContext: () => [],
+      // A provider that never answers on its own: the signal is the only way out.
+      complete: async (_prompt, signal) => {
+        completionCount += 1;
+        return new Promise<string | undefined>((resolve) => {
+          signal.addEventListener("abort", () => resolve(undefined), { once: true });
+        });
+      },
+      timeoutMs: 25,
+    });
+    const request = { projectRoot, existingSources: [], force: false } as const;
+
+    await resolver.resolve(request);
+    await resolver.resolve(request);
+
+    // The recovery must actually engage. Without the backoff the second
+    // resolve re-scans and re-burns the budget, once per tool call, forever.
+    expect(completionCount).toBe(1);
+  });
 });
 
 async function createFixture(): Promise<string> {
   const fixture = await mkdtemp(join(tmpdir(), "omp-policy-standards-"));
   temporaryDirectories.push(fixture);
   return fixture;
+}
+
+/**
+ * Record every budget the resolver hands to `AbortSignal.timeout`, which is
+ * the only observable the model layer never sees. Returns a restore function.
+ */
+function captureScanBudgets(into: number[]): () => void {
+  const target = AbortSignal as { timeout: (ms: number) => AbortSignal };
+  const original = target.timeout;
+  target.timeout = (ms: number) => {
+    into.push(ms);
+    return original(ms);
+  };
+  return () => {
+    target.timeout = original;
+  };
 }

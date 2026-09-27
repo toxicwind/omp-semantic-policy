@@ -60,6 +60,14 @@
         "type": "string",
         "default": "",
         "description": "Comma-separated exact tool classifications such as launchpad=read,launchpad_write=execute. Supported operations: read, write, execute, delegate, network, workflow, internal, and unknown. JSON object syntax is also accepted."
+      },
+      "scanTimeoutMs": {
+        "type": "number",
+        "default": 8000,
+        "min": 1000,
+        "max": 15000,
+        "step": 500,
+        "description": "Budget in milliseconds for the model-assisted standards-source scan that runs during onboarding. Must stay below the host's 30s extension-handler timeout: the host abandons a handler at its limit, and an abandoned handler never registers its own failure backoff, so a budget at or above the host's repeats on every turn. Clamped to 1000-15000."
       }
     }
   }

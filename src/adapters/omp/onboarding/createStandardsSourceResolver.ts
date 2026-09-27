@@ -51,12 +51,39 @@ export type StandardsModelCompletion = (
   prompt: string,
   signal: AbortSignal,
 ) => Promise<string | undefined>;
+/**
+ * Fallback scan budget, used when the caller passes no `timeoutMs`.
+ *
+ * Deliberately far below the 30s extension-handler timeout the OMP host
+ * imposes. The host abandons a handler at its limit, and an abandoned
+ * handler never executes the backoff branch below, so a budget at or above
+ * the host's turns a recoverable timeout into a permanent per-turn stall:
+ * every `before_agent_start` and every `tool_call` re-runs the scan and
+ * re-burns the full budget. A budget the host cannot pre-empt lets this
+ * module's own `unavailableUntil` recovery actually engage.
+ */
+export const DEFAULT_SCAN_TIMEOUT_MS = 8_000;
+
+/**
+ * How long a failed scan keeps the model out of the loop for this exact
+ * project state. Long enough that a slow or briefly-unavailable provider is
+ * not retried on every single tool call, short enough that a recovered
+ * provider still gets picked up without a restart.
+ */
+const UNAVAILABLE_BACKOFF_MS = 120_000;
 
 export interface StandardsSourceResolverOptions {
   readonly complete: StandardsModelCompletion;
   readonly getRuntimeContext: () => readonly string[];
+  /**
+   * Scan budget in milliseconds, or a getter for it.
+   *
+   * A getter is accepted because the OMP runtime builds this resolver once,
+   * before the project's settings file has been read, but needs the resolved
+   * value on every `resolve` call.
+   */
+  readonly timeoutMs?: number | (() => number);
   readonly sanitize?: (text: string) => string;
-  readonly timeoutMs?: number;
 }
 
 interface ProjectCandidate {
@@ -118,7 +145,10 @@ export function createStandardsSourceResolver(
         selection = { projectPaths: [], runtimeExcerpts: [] };
       }
       if (selection === undefined) {
-        const signal = AbortSignal.timeout(options.timeoutMs ?? 30_000);
+        const budget = options.timeoutMs;
+        const signal = AbortSignal.timeout(
+          (typeof budget === "function" ? budget() : budget) ?? DEFAULT_SCAN_TIMEOUT_MS,
+        );
         const response = await options.complete(buildScanPrompt(candidates, runtimeBlocks), signal);
         selection = validateModelSelection(
           response,
@@ -127,7 +157,7 @@ export function createStandardsSourceResolver(
           request.existingSources,
         );
         if (response === undefined) {
-          unavailableUntil.set(cacheKey, Date.now() + 30_000);
+          unavailableUntil.set(cacheKey, Date.now() + UNAVAILABLE_BACKOFF_MS);
         } else {
           cache.set(cacheKey, selection);
           unavailableUntil.delete(cacheKey);

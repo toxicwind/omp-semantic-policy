@@ -43,6 +43,7 @@ import { normalizeOmpToolCall } from "../events/normalizeToolCall.js";
 import {
   createProjectOnboarder,
   createStandardsSourceResolver,
+  DEFAULT_SCAN_TIMEOUT_MS,
   formatProjectPolicyReview,
   formatProjectPolicyStatus,
   type StandardsModelCompletion,
@@ -217,6 +218,7 @@ export function registerOmpPolicyRuntime(
     enabledToolCalls: DEFAULT_ENABLED_TOOL_CALLS,
     toolOperations: {},
     confirmationThreshold: 1,
+    scanTimeoutMs: DEFAULT_SCAN_TIMEOUT_MS,
   };
   let disabledToolCallNames = new Set<string>();
   let enabledToolCallNames = new Set(runtimeSettings.enabledToolCalls);
@@ -229,6 +231,7 @@ export function registerOmpPolicyRuntime(
       options.standardsCompletion ?? createDefaultModelStandardsCompletion(() => standardsContext),
     getRuntimeContext: () => runtimeSystemPrompt ?? standardsContext?.getSystemPrompt?.() ?? [],
     sanitize: redactText,
+    timeoutMs: () => runtimeSettings.scanTimeoutMs,
   });
 
   pi.setLabel(POLICY_NAME);

@@ -3109,7 +3109,518 @@ function collectShellRequestContext(session, currentRequest) {
 import { settings } from "@oh-my-pi/pi-coding-agent";
 import { getPluginSettings } from "@oh-my-pi/pi-coding-agent/extensibility/plugins";
 import { sanitizeText } from "@oh-my-pi/pi-utils";
-import { basename as basename3, isAbsolute as isAbsolute4, relative as relative4 } from "path";
+import { basename as basename3, isAbsolute as isAbsolute4, relative as relative6 } from "path";
+
+// src/adapters/omp/onboarding/createStandardsSourceResolver.ts
+import { createHash as createHash4 } from "crypto";
+import { lstat as lstat4, open as open2, readdir as readdir2, realpath as realpath5 } from "fs/promises";
+import { extname as extname2, join as join4, relative as relative5, resolve as resolve6, sep as sep5 } from "path";
+
+// src/adapters/omp/projects/discoverInstructionSources.ts
+import { createHash as createHash3 } from "crypto";
+import { lstat as lstat3, readFile, readdir, realpath as realpath4 } from "fs/promises";
+import { dirname as dirname3, extname, join as join3, relative as relative4, resolve as resolve5, sep as sep4 } from "path";
+
+// src/adapters/omp/projects/findGitProjectRoot.ts
+import { lstat as lstat2, realpath as realpath3, stat as stat2 } from "fs/promises";
+import { dirname as dirname2, join as join2 } from "path";
+async function findGitProjectRoot(startPath) {
+  const resolvedStart = await realpath3(startPath);
+  const startStats = await stat2(resolvedStart);
+  let current = startStats.isDirectory() ? resolvedStart : dirname2(resolvedStart);
+  for (;; ) {
+    if (await hasGitMarker(current)) {
+      return current;
+    }
+    const parent = dirname2(current);
+    if (parent === current) {
+      return;
+    }
+    current = parent;
+  }
+}
+async function hasGitMarker(directory) {
+  try {
+    const marker = await lstat2(join2(directory, ".git"));
+    return marker.isDirectory() || marker.isFile();
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+}
+function isMissingPathError(error) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+// src/adapters/omp/projects/discoverInstructionSources.ts
+var INSTRUCTION_FILENAMES2 = {
+  "AGENTS.md": true,
+  "CLAUDE.md": true
+};
+var IGNORED_DIRECTORIES = {
+  ".git": true,
+  build: true,
+  coverage: true,
+  dist: true,
+  node_modules: true,
+  target: true,
+  vendor: true
+};
+var LINKED_DIRECTORY_FILE_EXTENSIONS = {
+  ".adoc": true,
+  ".md": true,
+  ".markdown": true,
+  ".mdx": true,
+  ".prompt": true,
+  ".rst": true,
+  ".rules": true,
+  ".txt": true
+};
+async function discoverProjectInstructionSources(projectRoot) {
+  const canonicalRoot = await realpath4(projectRoot);
+  const sources = [];
+  await walkProject(canonicalRoot, canonicalRoot, sources);
+  return sources.sort((left, right) => left.path.localeCompare(right.path));
+}
+async function discoverProfileInstructionSources(paths) {
+  const sources = [];
+  for (const configuredPath of paths) {
+    try {
+      const canonicalPath = await realpath4(configuredPath);
+      const fileStats = await lstat3(canonicalPath);
+      if (!fileStats.isFile()) {
+        continue;
+      }
+      const content = await readFile(canonicalPath, "utf8");
+      sources.push({
+        id: `profile:${canonicalPath}`,
+        kind: "profile",
+        path: canonicalPath,
+        scopeRoot: dirname3(canonicalPath),
+        content,
+        contentDigest: digestText(content),
+        precedence: 0
+      });
+    } catch (error) {
+      if (!isMissingPathError2(error)) {
+        throw error;
+      }
+    }
+  }
+  return sources;
+}
+async function discoverLinkedInstructionSources(projectRoot, paths) {
+  const canonicalProjectRoot = await realpath4(projectRoot);
+  const sources = [];
+  const seenFiles = new Set;
+  for (const configuredPath of paths) {
+    try {
+      const canonicalPath = await realpath4(configuredPath);
+      const stats = await lstat3(canonicalPath);
+      if (stats.isFile()) {
+        await loadLinkedFile(canonicalProjectRoot, canonicalPath, sources, seenFiles);
+      } else if (stats.isDirectory()) {
+        await walkLinkedDirectory(canonicalProjectRoot, canonicalPath, sources, seenFiles);
+      }
+    } catch (error) {
+      if (!isMissingPathError2(error)) {
+        throw error;
+      }
+    }
+  }
+  return sources.sort((left, right) => left.path.localeCompare(right.path));
+}
+async function walkProject(projectRoot, directory, sources) {
+  if (directory !== projectRoot && await hasGitMarker(directory)) {
+    return;
+  }
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const entryPath = join3(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRECTORIES[entry.name] !== true) {
+        await walkProject(projectRoot, entryPath, sources);
+      }
+      continue;
+    }
+    if (!entry.isFile() || INSTRUCTION_FILENAMES2[entry.name] !== true) {
+      continue;
+    }
+    const canonicalPath = await realpath4(entryPath);
+    if (!isPathWithin3(projectRoot, canonicalPath)) {
+      continue;
+    }
+    const content = await readFile(canonicalPath, "utf8");
+    const scopeRoot = dirname3(canonicalPath);
+    const projectRelativePath = relative4(projectRoot, canonicalPath);
+    const depth = relative4(projectRoot, scopeRoot).split(sep4).filter(Boolean).length;
+    sources.push({
+      id: `project:${projectRelativePath}`,
+      kind: scopeRoot === projectRoot ? "project" : "subtree",
+      path: canonicalPath,
+      scopeRoot,
+      content,
+      contentDigest: digestText(content),
+      precedence: scopeRoot === projectRoot ? 100 : 200 + depth
+    });
+  }
+}
+async function walkLinkedDirectory(projectRoot, directory, sources, seenFiles) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const entryPath = join3(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRECTORIES[entry.name] !== true) {
+        await walkLinkedDirectory(projectRoot, entryPath, sources, seenFiles);
+      }
+      continue;
+    }
+    if (entry.isFile() && LINKED_DIRECTORY_FILE_EXTENSIONS[extname(entry.name).toLowerCase()] === true) {
+      await loadLinkedFile(projectRoot, entryPath, sources, seenFiles);
+    }
+  }
+}
+async function loadLinkedFile(projectRoot, path, sources, seenFiles) {
+  const canonicalPath = await realpath4(path);
+  if (seenFiles.has(canonicalPath)) {
+    return;
+  }
+  seenFiles.add(canonicalPath);
+  const content = await readFile(canonicalPath, "utf8");
+  sources.push({
+    id: `linked:${canonicalPath}`,
+    kind: "project",
+    path: canonicalPath,
+    scopeRoot: projectRoot,
+    content,
+    contentDigest: digestText(content),
+    precedence: 100
+  });
+}
+function digestText(content) {
+  return createHash3("sha256").update(content).digest("hex");
+}
+function isPathWithin3(root, candidate) {
+  const pathFromRoot = relative4(resolve5(root), resolve5(candidate));
+  return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep4}`) && pathFromRoot !== "..";
+}
+function isMissingPathError2(error) {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+// src/adapters/omp/onboarding/createStandardsSourceResolver.ts
+var IGNORED_DIRECTORIES2 = {
+  ".git": true,
+  build: true,
+  coverage: true,
+  dist: true,
+  node_modules: true,
+  target: true,
+  vendor: true
+};
+var PREVIEW_EXTENSIONS = {
+  "": true,
+  ".adoc": true,
+  ".md": true,
+  ".markdown": true,
+  ".mdx": true,
+  ".prompt": true,
+  ".rst": true,
+  ".rules": true,
+  ".txt": true
+};
+var MAX_CANDIDATES = 1000;
+var MAX_PREVIEW_BYTES = 2000;
+var MAX_PREVIEW_TOTAL = 80000;
+var MAX_RUNTIME_BLOCKS = 32;
+var MAX_RUNTIME_BLOCK_LENGTH = 12000;
+var MAX_RUNTIME_TOTAL = 48000;
+var MAX_SELECTED_FILES = 64;
+var MAX_SELECTED_FILE_BYTES = 512000;
+var MAX_RUNTIME_EXCERPTS = 16;
+var MAX_RUNTIME_EXCERPT_LENGTH = 8000;
+var DEFAULT_SCAN_TIMEOUT_MS = 8000;
+var UNAVAILABLE_BACKOFF_MS = 120000;
+function createStandardsSourceResolver(options) {
+  const cache = new Map;
+  const unavailableUntil = new Map;
+  return {
+    async resolve(request) {
+      const canonicalRoot = await realpath5(request.projectRoot);
+      const existingPaths = new Set(request.existingSources.map((source) => resolve6(source.path)));
+      const sanitize = options.sanitize ?? ((text) => text);
+      const candidates = await collectProjectCandidates(canonicalRoot, existingPaths, sanitize);
+      const runtimeBlocks = collectRuntimeContext(options.getRuntimeContext(), sanitize);
+      const cacheKey = digest(JSON.stringify({
+        candidates: candidates.map(({ relativePath, preview }) => ({
+          relativePath,
+          ...preview === undefined ? {} : { preview }
+        })),
+        runtimeBlocks
+      }));
+      let selection = request.force ? undefined : cache.get(cacheKey);
+      if (selection === undefined && !request.force && (unavailableUntil.get(cacheKey) ?? 0) > Date.now()) {
+        selection = { projectPaths: [], runtimeExcerpts: [] };
+      }
+      if (selection === undefined) {
+        const budget = options.timeoutMs;
+        const signal = AbortSignal.timeout((typeof budget === "function" ? budget() : budget) ?? DEFAULT_SCAN_TIMEOUT_MS);
+        const response = await options.complete(buildScanPrompt(candidates, runtimeBlocks), signal);
+        selection = validateModelSelection(response, candidates, runtimeBlocks, request.existingSources);
+        if (response === undefined) {
+          unavailableUntil.set(cacheKey, Date.now() + UNAVAILABLE_BACKOFF_MS);
+        } else {
+          cache.set(cacheKey, selection);
+          unavailableUntil.delete(cacheKey);
+        }
+      }
+      return loadSelectedSources(canonicalRoot, selection, candidates);
+    }
+  };
+}
+async function collectProjectCandidates(projectRoot, existingPaths, sanitize) {
+  const paths = [];
+  await walkCandidatePaths(projectRoot, projectRoot, paths);
+  paths.sort((left, right) => left.localeCompare(right));
+  const candidates = [];
+  let previewBudget = MAX_PREVIEW_TOTAL;
+  for (const absolutePath of paths) {
+    if (candidates.length >= MAX_CANDIDATES || existingPaths.has(resolve6(absolutePath)) || previewBudget <= 0) {
+      continue;
+    }
+    const relativePath = toPortablePath(relative5(projectRoot, absolutePath));
+    if (PREVIEW_EXTENSIONS[extname2(relativePath).toLowerCase()] !== true) {
+      continue;
+    }
+    const rawPreview = await readTextPreview(absolutePath, Math.min(MAX_PREVIEW_BYTES, previewBudget));
+    if (rawPreview === undefined) {
+      continue;
+    }
+    const preview = sanitize(rawPreview);
+    previewBudget -= preview.length;
+    candidates.push({ absolutePath, relativePath, preview });
+  }
+  return candidates;
+}
+async function walkCandidatePaths(projectRoot, directory, paths) {
+  const entries = await readdir2(directory, { withFileTypes: true });
+  entries.sort((left, right) => left.name.localeCompare(right.name));
+  for (const entry of entries) {
+    const entryPath = join4(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      continue;
+    }
+    if (entry.isDirectory()) {
+      if (IGNORED_DIRECTORIES2[entry.name] === true || entryPath !== projectRoot && await hasGitMarker(entryPath)) {
+        continue;
+      }
+      await walkCandidatePaths(projectRoot, entryPath, paths);
+      continue;
+    }
+    if (!entry.isFile()) {
+      continue;
+    }
+    const canonicalPath = await realpath5(entryPath);
+    if (isPathWithin4(projectRoot, canonicalPath)) {
+      paths.push(canonicalPath);
+    }
+  }
+}
+async function readTextPreview(path, limit) {
+  const handle = await open2(path, "r");
+  try {
+    const buffer = Buffer.alloc(limit);
+    const { bytesRead } = await handle.read(buffer, 0, limit, 0);
+    const bytes = buffer.subarray(0, bytesRead);
+    if (bytes.includes(0)) {
+      return;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+    } catch {
+      return;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+function collectRuntimeContext(rawBlocks, sanitize) {
+  const blocks = [];
+  let remaining = MAX_RUNTIME_TOTAL;
+  for (const [id, rawBlock] of rawBlocks.entries()) {
+    if (blocks.length >= MAX_RUNTIME_BLOCKS || remaining <= 0) {
+      break;
+    }
+    const content = sanitize(rawBlock).slice(0, Math.min(MAX_RUNTIME_BLOCK_LENGTH, remaining)).trim();
+    if (content.length === 0) {
+      continue;
+    }
+    blocks.push({ id, content });
+    remaining -= content.length;
+  }
+  return blocks;
+}
+function buildScanPrompt(candidates, runtimeBlocks) {
+  const projectInput = candidates.map((candidate) => candidate.preview === undefined ? `PATH ${JSON.stringify(candidate.relativePath)}` : `PATH ${JSON.stringify(candidate.relativePath)}
+PREVIEW ${JSON.stringify(candidate.preview)}`).join(`
+`);
+  const runtimeInput = runtimeBlocks.map((block) => `BLOCK ${block.id}
+${block.content}`).join(`
+---
+`);
+  return [
+    "Runtime excerpts must be project-specific standards originating from active skills or MCP instructions. Do not select general assistant persona, host operation, or tool-usage instructions.",
+    "Select only files whose path or preview clearly contains normative development rules, contribution requirements, agent skills, or project instructions.",
+    "Do not select ordinary source code, generated output, changelogs, examples, or descriptive documentation without normative rules.",
+    "Runtime context may contain active skill or MCP instructions. Return only short, exact, verbatim excerpts that state normative rules; never paraphrase or invent text.",
+    "AGENTS.md and CLAUDE.md files already loaded by the host are absent from the candidates.",
+    `Return exactly one JSON object with this shape: {"projectPaths":["relative/path"],"runtimeExcerpts":[{"blockId":0,"text":"exact excerpt"}]}`,
+    "Use only listed paths and block IDs. Return empty arrays when no additional standards are present.",
+    "",
+    "PROJECT FILES",
+    projectInput || "(none)",
+    "",
+    "RUNTIME CONTEXT",
+    runtimeInput || "(none)"
+  ].join(`
+`);
+}
+function validateModelSelection(response, candidates, runtimeBlocks, existingSources) {
+  if (response === undefined) {
+    return { projectPaths: [], runtimeExcerpts: [] };
+  }
+  const parsed = parseJsonObject(response);
+  if (parsed === undefined) {
+    return { projectPaths: [], runtimeExcerpts: [] };
+  }
+  const candidatePaths = new Set(candidates.map((candidate) => candidate.relativePath));
+  const blocks = new Map(runtimeBlocks.map((block) => [block.id, block.content]));
+  const projectPaths = [];
+  const runtimeExcerpts = [];
+  if (Array.isArray(parsed.projectPaths)) {
+    for (const value of parsed.projectPaths) {
+      if (projectPaths.length >= MAX_SELECTED_FILES || typeof value !== "string" || !candidatePaths.has(value) || projectPaths.includes(value)) {
+        continue;
+      }
+      projectPaths.push(value);
+    }
+  }
+  if (Array.isArray(parsed.runtimeExcerpts)) {
+    for (const value of parsed.runtimeExcerpts) {
+      if (runtimeExcerpts.length >= MAX_RUNTIME_EXCERPTS || typeof value !== "object" || value === null || Array.isArray(value) || !("blockId" in value) || typeof value.blockId !== "number" || !Number.isInteger(value.blockId) || !("text" in value) || typeof value.text !== "string") {
+        continue;
+      }
+      const text = value.text.trim();
+      const block = blocks.get(value.blockId);
+      if (block === undefined || text.length === 0 || text.length > MAX_RUNTIME_EXCERPT_LENGTH || !block.includes(text) || existingSources.some((source) => source.content.includes(text)) || runtimeExcerpts.some((excerpt) => excerpt.blockId === value.blockId && excerpt.text === text)) {
+        continue;
+      }
+      runtimeExcerpts.push({ blockId: value.blockId, text });
+    }
+  }
+  return { projectPaths, runtimeExcerpts };
+}
+function parseJsonObject(text) {
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return;
+  }
+  try {
+    const value = JSON.parse(text.slice(start, end + 1));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return;
+    }
+    return value;
+  } catch {
+    return;
+  }
+}
+async function loadSelectedSources(projectRoot, selection, candidates) {
+  const candidateByPath = new Map(candidates.map((candidate) => [candidate.relativePath, candidate]));
+  const sources = [];
+  for (const relativePath of selection.projectPaths) {
+    const candidate = candidateByPath.get(relativePath);
+    if (candidate === undefined) {
+      continue;
+    }
+    const stats = await lstat4(candidate.absolutePath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_SELECTED_FILE_BYTES) {
+      continue;
+    }
+    const canonicalPath = await realpath5(candidate.absolutePath);
+    if (!isPathWithin4(projectRoot, canonicalPath)) {
+      continue;
+    }
+    const content = await readUtf8File(canonicalPath);
+    if (content === undefined) {
+      continue;
+    }
+    sources.push({
+      id: `model-project:${relativePath}`,
+      kind: "project",
+      path: canonicalPath,
+      scopeRoot: projectRoot,
+      content,
+      contentDigest: digest(content),
+      precedence: 110
+    });
+  }
+  if (selection.runtimeExcerpts.length > 0) {
+    const content = selection.runtimeExcerpts.map((excerpt) => excerpt.text).join(`
+
+`);
+    const contentDigest = digest(content);
+    sources.push({
+      id: `runtime-context:${contentDigest}`,
+      kind: "project",
+      path: `runtime://default-model/${contentDigest}`,
+      scopeRoot: projectRoot,
+      content,
+      contentDigest,
+      precedence: 110
+    });
+  }
+  return sources.sort((left, right) => left.path.localeCompare(right.path));
+}
+async function readUtf8File(path) {
+  const handle = await open2(path, "r");
+  try {
+    const buffer = Buffer.alloc(MAX_SELECTED_FILE_BYTES + 1);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    if (bytesRead > MAX_SELECTED_FILE_BYTES) {
+      return;
+    }
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
+    } catch {
+      return;
+    }
+  } finally {
+    await handle.close();
+  }
+}
+function isPathWithin4(root, candidate) {
+  const pathFromRoot = relative5(resolve6(root), resolve6(candidate));
+  return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep5}`) && pathFromRoot !== "..";
+}
+function toPortablePath(path) {
+  return path.split(sep5).join("/");
+}
+function digest(content) {
+  return createHash4("sha256").update(content).digest("hex");
+}
+
+// src/adapters/omp/runtime/policyPresentation.ts
 var PLUGIN_NAME = "omp-semantic-policy";
 var DEFAULT_ENABLED_TOOL_CALLS = [
   "bash",
@@ -3125,7 +3636,7 @@ var DEFAULT_ENABLED_TOOL_CALLS = [
 ];
 async function loadPolicyRuntimeSettings(cwd, overrides = {}) {
   let configured = {};
-  if (overrides.showStatus === undefined || overrides.showViolationFeedback === undefined || overrides.confirmationDefault === undefined || overrides.confirmationThreshold === undefined || overrides.disabledToolCalls === undefined || overrides.enabledToolCalls === undefined || overrides.toolOperations === undefined) {
+  if (overrides.showStatus === undefined || overrides.showViolationFeedback === undefined || overrides.confirmationDefault === undefined || overrides.confirmationThreshold === undefined || overrides.disabledToolCalls === undefined || overrides.enabledToolCalls === undefined || overrides.toolOperations === undefined || overrides.scanTimeoutMs === undefined) {
     try {
       configured = await getPluginSettings(PLUGIN_NAME, cwd);
     } catch {
@@ -3144,11 +3655,20 @@ async function loadPolicyRuntimeSettings(cwd, overrides = {}) {
     confirmationThreshold,
     disabledToolCalls,
     enabledToolCalls,
-    toolOperations
+    toolOperations,
+    scanTimeoutMs: normalizeScanTimeoutMs(overrides.scanTimeoutMs ?? configured.scanTimeoutMs)
   };
 }
 function normalizeConfirmationThreshold(value) {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
+}
+var MAX_SCAN_TIMEOUT_MS = 15000;
+var MIN_SCAN_TIMEOUT_MS = 1000;
+function normalizeScanTimeoutMs(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return DEFAULT_SCAN_TIMEOUT_MS;
+  }
+  return Math.min(MAX_SCAN_TIMEOUT_MS, Math.max(MIN_SCAN_TIMEOUT_MS, Math.round(value)));
 }
 function normalizeToolCallNames(value) {
   const items = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : [];
@@ -3256,7 +3776,7 @@ function formatPolicyDecisionFeedback(decision, action) {
     explanation = safeFeedbackText(decision.reason, 240);
   }
   if (rule?.sourcePath !== undefined) {
-    const localPath = relative4(action.workingDirectory, rule.sourcePath);
+    const localPath = relative6(action.workingDirectory, rule.sourcePath);
     const source = localPath === ".." || localPath.startsWith("../") || isAbsolute4(localPath) ? basename3(rule.sourcePath) : localPath;
     explanation += `
 Source: ${safeFeedbackText(source, 140)}`;
@@ -3915,207 +4435,6 @@ function selectDispatchIntent(hostTool, hostInput, toolOperations = {}) {
   return { tool, input, operation, details, complete };
 }
 
-// src/adapters/omp/projects/discoverInstructionSources.ts
-import { createHash as createHash3 } from "crypto";
-import { lstat as lstat3, readFile, readdir, realpath as realpath4 } from "fs/promises";
-import { dirname as dirname3, extname, join as join3, relative as relative5, resolve as resolve5, sep as sep4 } from "path";
-
-// src/adapters/omp/projects/findGitProjectRoot.ts
-import { lstat as lstat2, realpath as realpath3, stat as stat2 } from "fs/promises";
-import { dirname as dirname2, join as join2 } from "path";
-async function findGitProjectRoot(startPath) {
-  const resolvedStart = await realpath3(startPath);
-  const startStats = await stat2(resolvedStart);
-  let current = startStats.isDirectory() ? resolvedStart : dirname2(resolvedStart);
-  for (;; ) {
-    if (await hasGitMarker(current)) {
-      return current;
-    }
-    const parent = dirname2(current);
-    if (parent === current) {
-      return;
-    }
-    current = parent;
-  }
-}
-async function hasGitMarker(directory) {
-  try {
-    const marker = await lstat2(join2(directory, ".git"));
-    return marker.isDirectory() || marker.isFile();
-  } catch (error) {
-    if (isMissingPathError(error)) {
-      return false;
-    }
-    throw error;
-  }
-}
-function isMissingPathError(error) {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
-
-// src/adapters/omp/projects/discoverInstructionSources.ts
-var INSTRUCTION_FILENAMES2 = {
-  "AGENTS.md": true,
-  "CLAUDE.md": true
-};
-var IGNORED_DIRECTORIES = {
-  ".git": true,
-  build: true,
-  coverage: true,
-  dist: true,
-  node_modules: true,
-  target: true,
-  vendor: true
-};
-var LINKED_DIRECTORY_FILE_EXTENSIONS = {
-  ".adoc": true,
-  ".md": true,
-  ".markdown": true,
-  ".mdx": true,
-  ".prompt": true,
-  ".rst": true,
-  ".rules": true,
-  ".txt": true
-};
-async function discoverProjectInstructionSources(projectRoot) {
-  const canonicalRoot = await realpath4(projectRoot);
-  const sources = [];
-  await walkProject(canonicalRoot, canonicalRoot, sources);
-  return sources.sort((left, right) => left.path.localeCompare(right.path));
-}
-async function discoverProfileInstructionSources(paths) {
-  const sources = [];
-  for (const configuredPath of paths) {
-    try {
-      const canonicalPath = await realpath4(configuredPath);
-      const fileStats = await lstat3(canonicalPath);
-      if (!fileStats.isFile()) {
-        continue;
-      }
-      const content = await readFile(canonicalPath, "utf8");
-      sources.push({
-        id: `profile:${canonicalPath}`,
-        kind: "profile",
-        path: canonicalPath,
-        scopeRoot: dirname3(canonicalPath),
-        content,
-        contentDigest: digestText(content),
-        precedence: 0
-      });
-    } catch (error) {
-      if (!isMissingPathError2(error)) {
-        throw error;
-      }
-    }
-  }
-  return sources;
-}
-async function discoverLinkedInstructionSources(projectRoot, paths) {
-  const canonicalProjectRoot = await realpath4(projectRoot);
-  const sources = [];
-  const seenFiles = new Set;
-  for (const configuredPath of paths) {
-    try {
-      const canonicalPath = await realpath4(configuredPath);
-      const stats = await lstat3(canonicalPath);
-      if (stats.isFile()) {
-        await loadLinkedFile(canonicalProjectRoot, canonicalPath, sources, seenFiles);
-      } else if (stats.isDirectory()) {
-        await walkLinkedDirectory(canonicalProjectRoot, canonicalPath, sources, seenFiles);
-      }
-    } catch (error) {
-      if (!isMissingPathError2(error)) {
-        throw error;
-      }
-    }
-  }
-  return sources.sort((left, right) => left.path.localeCompare(right.path));
-}
-async function walkProject(projectRoot, directory, sources) {
-  if (directory !== projectRoot && await hasGitMarker(directory)) {
-    return;
-  }
-  const entries = await readdir(directory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const entryPath = join3(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-    if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES[entry.name] !== true) {
-        await walkProject(projectRoot, entryPath, sources);
-      }
-      continue;
-    }
-    if (!entry.isFile() || INSTRUCTION_FILENAMES2[entry.name] !== true) {
-      continue;
-    }
-    const canonicalPath = await realpath4(entryPath);
-    if (!isPathWithin3(projectRoot, canonicalPath)) {
-      continue;
-    }
-    const content = await readFile(canonicalPath, "utf8");
-    const scopeRoot = dirname3(canonicalPath);
-    const projectRelativePath = relative5(projectRoot, canonicalPath);
-    const depth = relative5(projectRoot, scopeRoot).split(sep4).filter(Boolean).length;
-    sources.push({
-      id: `project:${projectRelativePath}`,
-      kind: scopeRoot === projectRoot ? "project" : "subtree",
-      path: canonicalPath,
-      scopeRoot,
-      content,
-      contentDigest: digestText(content),
-      precedence: scopeRoot === projectRoot ? 100 : 200 + depth
-    });
-  }
-}
-async function walkLinkedDirectory(projectRoot, directory, sources, seenFiles) {
-  const entries = await readdir(directory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const entryPath = join3(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-    if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES[entry.name] !== true) {
-        await walkLinkedDirectory(projectRoot, entryPath, sources, seenFiles);
-      }
-      continue;
-    }
-    if (entry.isFile() && LINKED_DIRECTORY_FILE_EXTENSIONS[extname(entry.name).toLowerCase()] === true) {
-      await loadLinkedFile(projectRoot, entryPath, sources, seenFiles);
-    }
-  }
-}
-async function loadLinkedFile(projectRoot, path, sources, seenFiles) {
-  const canonicalPath = await realpath4(path);
-  if (seenFiles.has(canonicalPath)) {
-    return;
-  }
-  seenFiles.add(canonicalPath);
-  const content = await readFile(canonicalPath, "utf8");
-  sources.push({
-    id: `linked:${canonicalPath}`,
-    kind: "project",
-    path: canonicalPath,
-    scopeRoot: projectRoot,
-    content,
-    contentDigest: digestText(content),
-    precedence: 100
-  });
-}
-function digestText(content) {
-  return createHash3("sha256").update(content).digest("hex");
-}
-function isPathWithin3(root, candidate) {
-  const pathFromRoot = relative5(resolve5(root), resolve5(candidate));
-  return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep4}`) && pathFromRoot !== "..";
-}
-function isMissingPathError2(error) {
-  return error instanceof Error && "code" in error && error.code === "ENOENT";
-}
 // src/adapters/omp/onboarding/createProjectOnboarder.ts
 function createProjectOnboarder(options) {
   return {
@@ -4170,308 +4489,6 @@ function createProjectOnboarder(options) {
       };
     }
   };
-}
-// src/adapters/omp/onboarding/createStandardsSourceResolver.ts
-import { createHash as createHash4 } from "crypto";
-import { lstat as lstat4, open as open2, readdir as readdir2, realpath as realpath5 } from "fs/promises";
-import { extname as extname2, join as join4, relative as relative6, resolve as resolve6, sep as sep5 } from "path";
-var IGNORED_DIRECTORIES2 = {
-  ".git": true,
-  build: true,
-  coverage: true,
-  dist: true,
-  node_modules: true,
-  target: true,
-  vendor: true
-};
-var PREVIEW_EXTENSIONS = {
-  "": true,
-  ".adoc": true,
-  ".md": true,
-  ".markdown": true,
-  ".mdx": true,
-  ".prompt": true,
-  ".rst": true,
-  ".rules": true,
-  ".txt": true
-};
-var MAX_CANDIDATES = 1000;
-var MAX_PREVIEW_BYTES = 2000;
-var MAX_PREVIEW_TOTAL = 80000;
-var MAX_RUNTIME_BLOCKS = 32;
-var MAX_RUNTIME_BLOCK_LENGTH = 12000;
-var MAX_RUNTIME_TOTAL = 48000;
-var MAX_SELECTED_FILES = 64;
-var MAX_SELECTED_FILE_BYTES = 512000;
-var MAX_RUNTIME_EXCERPTS = 16;
-var MAX_RUNTIME_EXCERPT_LENGTH = 8000;
-function createStandardsSourceResolver(options) {
-  const cache = new Map;
-  const unavailableUntil = new Map;
-  return {
-    async resolve(request) {
-      const canonicalRoot = await realpath5(request.projectRoot);
-      const existingPaths = new Set(request.existingSources.map((source) => resolve6(source.path)));
-      const sanitize = options.sanitize ?? ((text) => text);
-      const candidates = await collectProjectCandidates(canonicalRoot, existingPaths, sanitize);
-      const runtimeBlocks = collectRuntimeContext(options.getRuntimeContext(), sanitize);
-      const cacheKey = digest(JSON.stringify({
-        candidates: candidates.map(({ relativePath, preview }) => ({
-          relativePath,
-          ...preview === undefined ? {} : { preview }
-        })),
-        runtimeBlocks
-      }));
-      let selection = request.force ? undefined : cache.get(cacheKey);
-      if (selection === undefined && !request.force && (unavailableUntil.get(cacheKey) ?? 0) > Date.now()) {
-        selection = { projectPaths: [], runtimeExcerpts: [] };
-      }
-      if (selection === undefined) {
-        const signal = AbortSignal.timeout(options.timeoutMs ?? 30000);
-        const response = await options.complete(buildScanPrompt(candidates, runtimeBlocks), signal);
-        selection = validateModelSelection(response, candidates, runtimeBlocks, request.existingSources);
-        if (response === undefined) {
-          unavailableUntil.set(cacheKey, Date.now() + 30000);
-        } else {
-          cache.set(cacheKey, selection);
-          unavailableUntil.delete(cacheKey);
-        }
-      }
-      return loadSelectedSources(canonicalRoot, selection, candidates);
-    }
-  };
-}
-async function collectProjectCandidates(projectRoot, existingPaths, sanitize) {
-  const paths = [];
-  await walkCandidatePaths(projectRoot, projectRoot, paths);
-  paths.sort((left, right) => left.localeCompare(right));
-  const candidates = [];
-  let previewBudget = MAX_PREVIEW_TOTAL;
-  for (const absolutePath of paths) {
-    if (candidates.length >= MAX_CANDIDATES || existingPaths.has(resolve6(absolutePath)) || previewBudget <= 0) {
-      continue;
-    }
-    const relativePath = toPortablePath(relative6(projectRoot, absolutePath));
-    if (PREVIEW_EXTENSIONS[extname2(relativePath).toLowerCase()] !== true) {
-      continue;
-    }
-    const rawPreview = await readTextPreview(absolutePath, Math.min(MAX_PREVIEW_BYTES, previewBudget));
-    if (rawPreview === undefined) {
-      continue;
-    }
-    const preview = sanitize(rawPreview);
-    previewBudget -= preview.length;
-    candidates.push({ absolutePath, relativePath, preview });
-  }
-  return candidates;
-}
-async function walkCandidatePaths(projectRoot, directory, paths) {
-  const entries = await readdir2(directory, { withFileTypes: true });
-  entries.sort((left, right) => left.name.localeCompare(right.name));
-  for (const entry of entries) {
-    const entryPath = join4(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      continue;
-    }
-    if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES2[entry.name] === true || entryPath !== projectRoot && await hasGitMarker(entryPath)) {
-        continue;
-      }
-      await walkCandidatePaths(projectRoot, entryPath, paths);
-      continue;
-    }
-    if (!entry.isFile()) {
-      continue;
-    }
-    const canonicalPath = await realpath5(entryPath);
-    if (isPathWithin4(projectRoot, canonicalPath)) {
-      paths.push(canonicalPath);
-    }
-  }
-}
-async function readTextPreview(path, limit) {
-  const handle = await open2(path, "r");
-  try {
-    const buffer = Buffer.alloc(limit);
-    const { bytesRead } = await handle.read(buffer, 0, limit, 0);
-    const bytes = buffer.subarray(0, bytesRead);
-    if (bytes.includes(0)) {
-      return;
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
-    } catch {
-      return;
-    }
-  } finally {
-    await handle.close();
-  }
-}
-function collectRuntimeContext(rawBlocks, sanitize) {
-  const blocks = [];
-  let remaining = MAX_RUNTIME_TOTAL;
-  for (const [id, rawBlock] of rawBlocks.entries()) {
-    if (blocks.length >= MAX_RUNTIME_BLOCKS || remaining <= 0) {
-      break;
-    }
-    const content = sanitize(rawBlock).slice(0, Math.min(MAX_RUNTIME_BLOCK_LENGTH, remaining)).trim();
-    if (content.length === 0) {
-      continue;
-    }
-    blocks.push({ id, content });
-    remaining -= content.length;
-  }
-  return blocks;
-}
-function buildScanPrompt(candidates, runtimeBlocks) {
-  const projectInput = candidates.map((candidate) => candidate.preview === undefined ? `PATH ${JSON.stringify(candidate.relativePath)}` : `PATH ${JSON.stringify(candidate.relativePath)}
-PREVIEW ${JSON.stringify(candidate.preview)}`).join(`
-`);
-  const runtimeInput = runtimeBlocks.map((block) => `BLOCK ${block.id}
-${block.content}`).join(`
----
-`);
-  return [
-    "Runtime excerpts must be project-specific standards originating from active skills or MCP instructions. Do not select general assistant persona, host operation, or tool-usage instructions.",
-    "Select only files whose path or preview clearly contains normative development rules, contribution requirements, agent skills, or project instructions.",
-    "Do not select ordinary source code, generated output, changelogs, examples, or descriptive documentation without normative rules.",
-    "Runtime context may contain active skill or MCP instructions. Return only short, exact, verbatim excerpts that state normative rules; never paraphrase or invent text.",
-    "AGENTS.md and CLAUDE.md files already loaded by the host are absent from the candidates.",
-    `Return exactly one JSON object with this shape: {"projectPaths":["relative/path"],"runtimeExcerpts":[{"blockId":0,"text":"exact excerpt"}]}`,
-    "Use only listed paths and block IDs. Return empty arrays when no additional standards are present.",
-    "",
-    "PROJECT FILES",
-    projectInput || "(none)",
-    "",
-    "RUNTIME CONTEXT",
-    runtimeInput || "(none)"
-  ].join(`
-`);
-}
-function validateModelSelection(response, candidates, runtimeBlocks, existingSources) {
-  if (response === undefined) {
-    return { projectPaths: [], runtimeExcerpts: [] };
-  }
-  const parsed = parseJsonObject(response);
-  if (parsed === undefined) {
-    return { projectPaths: [], runtimeExcerpts: [] };
-  }
-  const candidatePaths = new Set(candidates.map((candidate) => candidate.relativePath));
-  const blocks = new Map(runtimeBlocks.map((block) => [block.id, block.content]));
-  const projectPaths = [];
-  const runtimeExcerpts = [];
-  if (Array.isArray(parsed.projectPaths)) {
-    for (const value of parsed.projectPaths) {
-      if (projectPaths.length >= MAX_SELECTED_FILES || typeof value !== "string" || !candidatePaths.has(value) || projectPaths.includes(value)) {
-        continue;
-      }
-      projectPaths.push(value);
-    }
-  }
-  if (Array.isArray(parsed.runtimeExcerpts)) {
-    for (const value of parsed.runtimeExcerpts) {
-      if (runtimeExcerpts.length >= MAX_RUNTIME_EXCERPTS || typeof value !== "object" || value === null || Array.isArray(value) || !("blockId" in value) || typeof value.blockId !== "number" || !Number.isInteger(value.blockId) || !("text" in value) || typeof value.text !== "string") {
-        continue;
-      }
-      const text = value.text.trim();
-      const block = blocks.get(value.blockId);
-      if (block === undefined || text.length === 0 || text.length > MAX_RUNTIME_EXCERPT_LENGTH || !block.includes(text) || existingSources.some((source) => source.content.includes(text)) || runtimeExcerpts.some((excerpt) => excerpt.blockId === value.blockId && excerpt.text === text)) {
-        continue;
-      }
-      runtimeExcerpts.push({ blockId: value.blockId, text });
-    }
-  }
-  return { projectPaths, runtimeExcerpts };
-}
-function parseJsonObject(text) {
-  const start = text.indexOf("{");
-  const end = text.lastIndexOf("}");
-  if (start < 0 || end <= start) {
-    return;
-  }
-  try {
-    const value = JSON.parse(text.slice(start, end + 1));
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
-      return;
-    }
-    return value;
-  } catch {
-    return;
-  }
-}
-async function loadSelectedSources(projectRoot, selection, candidates) {
-  const candidateByPath = new Map(candidates.map((candidate) => [candidate.relativePath, candidate]));
-  const sources = [];
-  for (const relativePath of selection.projectPaths) {
-    const candidate = candidateByPath.get(relativePath);
-    if (candidate === undefined) {
-      continue;
-    }
-    const stats = await lstat4(candidate.absolutePath);
-    if (!stats.isFile() || stats.isSymbolicLink() || stats.size > MAX_SELECTED_FILE_BYTES) {
-      continue;
-    }
-    const canonicalPath = await realpath5(candidate.absolutePath);
-    if (!isPathWithin4(projectRoot, canonicalPath)) {
-      continue;
-    }
-    const content = await readUtf8File(canonicalPath);
-    if (content === undefined) {
-      continue;
-    }
-    sources.push({
-      id: `model-project:${relativePath}`,
-      kind: "project",
-      path: canonicalPath,
-      scopeRoot: projectRoot,
-      content,
-      contentDigest: digest(content),
-      precedence: 110
-    });
-  }
-  if (selection.runtimeExcerpts.length > 0) {
-    const content = selection.runtimeExcerpts.map((excerpt) => excerpt.text).join(`
-
-`);
-    const contentDigest = digest(content);
-    sources.push({
-      id: `runtime-context:${contentDigest}`,
-      kind: "project",
-      path: `runtime://default-model/${contentDigest}`,
-      scopeRoot: projectRoot,
-      content,
-      contentDigest,
-      precedence: 110
-    });
-  }
-  return sources.sort((left, right) => left.path.localeCompare(right.path));
-}
-async function readUtf8File(path) {
-  const handle = await open2(path, "r");
-  try {
-    const buffer = Buffer.alloc(MAX_SELECTED_FILE_BYTES + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > MAX_SELECTED_FILE_BYTES) {
-      return;
-    }
-    try {
-      return new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, bytesRead));
-    } catch {
-      return;
-    }
-  } finally {
-    await handle.close();
-  }
-}
-function isPathWithin4(root, candidate) {
-  const pathFromRoot = relative6(resolve6(root), resolve6(candidate));
-  return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep5}`) && pathFromRoot !== "..";
-}
-function toPortablePath(path) {
-  return path.split(sep5).join("/");
-}
-function digest(content) {
-  return createHash4("sha256").update(content).digest("hex");
 }
 // src/adapters/omp/onboarding/formatProjectPolicy.ts
 import { homedir } from "os";
@@ -5337,7 +5354,8 @@ function registerOmpPolicyRuntime(pi, options = {}) {
     disabledToolCalls: [],
     enabledToolCalls: DEFAULT_ENABLED_TOOL_CALLS,
     toolOperations: {},
-    confirmationThreshold: 1
+    confirmationThreshold: 1,
+    scanTimeoutMs: DEFAULT_SCAN_TIMEOUT_MS
   };
   let disabledToolCallNames = new Set;
   let enabledToolCallNames = new Set(runtimeSettings.enabledToolCalls);
@@ -5348,7 +5366,8 @@ function registerOmpPolicyRuntime(pi, options = {}) {
   const standardsSourceResolver = createStandardsSourceResolver({
     complete: options.standardsCompletion ?? createDefaultModelStandardsCompletion(() => standardsContext),
     getRuntimeContext: () => runtimeSystemPrompt ?? standardsContext?.getSystemPrompt?.() ?? [],
-    sanitize: redactText
+    sanitize: redactText,
+    timeoutMs: () => runtimeSettings.scanTimeoutMs
   });
   pi.setLabel(POLICY_NAME);
   function refreshStatus(context, repository) {
