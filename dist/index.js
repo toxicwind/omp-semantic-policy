@@ -9,7 +9,7 @@ import { Loader } from "@oh-my-pi/pi-tui";
 import { createHash as createHash6, randomUUID } from "crypto";
 import { realpath as realpath7 } from "fs/promises";
 import { homedir as homedir2 } from "os";
-import { join as join5, resolve as resolve9 } from "path";
+import { join as join5, resolve as resolve10 } from "path";
 
 // src/policy/compiler/compilePolicySnapshot.ts
 import { createHash } from "crypto";
@@ -3114,16 +3114,16 @@ import { basename as basename3, isAbsolute as isAbsolute4, relative as relative6
 // src/adapters/omp/onboarding/createStandardsSourceResolver.ts
 import { createHash as createHash4 } from "crypto";
 import { lstat as lstat4, open as open2, readdir as readdir2, realpath as realpath5 } from "fs/promises";
-import { extname as extname2, join as join4, relative as relative5, resolve as resolve6, sep as sep5 } from "path";
+import { extname as extname2, join as join4, relative as relative5, resolve as resolve7, sep as sep5 } from "path";
 
 // src/adapters/omp/projects/discoverInstructionSources.ts
 import { createHash as createHash3 } from "crypto";
-import { lstat as lstat3, readFile, readdir, realpath as realpath4 } from "fs/promises";
-import { dirname as dirname3, extname, join as join3, relative as relative4, resolve as resolve5, sep as sep4 } from "path";
+import { lstat as lstat3, readFile as readFile2, readdir, realpath as realpath4 } from "fs/promises";
+import { dirname as dirname3, extname, join as join3, relative as relative4, resolve as resolve6, sep as sep4 } from "path";
 
 // src/adapters/omp/projects/findGitProjectRoot.ts
-import { lstat as lstat2, realpath as realpath3, stat as stat2 } from "fs/promises";
-import { dirname as dirname2, join as join2 } from "path";
+import { lstat as lstat2, readFile, realpath as realpath3, stat as stat2 } from "fs/promises";
+import { dirname as dirname2, join as join2, resolve as resolve5 } from "path";
 async function findGitProjectRoot(startPath) {
   const resolvedStart = await realpath3(startPath);
   const startStats = await stat2(resolvedStart);
@@ -3140,9 +3140,44 @@ async function findGitProjectRoot(startPath) {
   }
 }
 async function hasGitMarker(directory) {
+  const markerPath = join2(directory, ".git");
+  let marker;
   try {
-    const marker = await lstat2(join2(directory, ".git"));
-    return marker.isDirectory() || marker.isFile();
+    marker = await lstat2(markerPath);
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+  if (marker.isFile()) {
+    return await isGitdirPointer(markerPath);
+  }
+  if (!marker.isDirectory()) {
+    return false;
+  }
+  return await exists(join2(markerPath, "HEAD")) && await exists(join2(markerPath, "objects"));
+}
+async function isGitdirPointer(markerPath) {
+  let contents;
+  try {
+    contents = await readFile(markerPath, "utf8");
+  } catch (error) {
+    if (isMissingPathError(error)) {
+      return false;
+    }
+    throw error;
+  }
+  const target = /^gitdir:\s*(.+?)\s*$/m.exec(contents)?.[1];
+  if (target === undefined) {
+    return false;
+  }
+  return exists(resolve5(dirname2(markerPath), target));
+}
+async function exists(path) {
+  try {
+    await stat2(path);
+    return true;
   } catch (error) {
     if (isMissingPathError(error)) {
       return false;
@@ -3178,10 +3213,17 @@ var LINKED_DIRECTORY_FILE_EXTENSIONS = {
   ".rules": true,
   ".txt": true
 };
+var MAX_SCAN_DEPTH = 6;
+var MAX_SCAN_ENTRIES = 20000;
+var MAX_SCAN_DURATION_MS = 2000;
+function exhausted(budget) {
+  return budget.entries >= MAX_SCAN_ENTRIES || Date.now() >= budget.deadline;
+}
 async function discoverProjectInstructionSources(projectRoot) {
   const canonicalRoot = await realpath4(projectRoot);
   const sources = [];
-  await walkProject(canonicalRoot, canonicalRoot, sources);
+  const budget = { entries: 0, deadline: Date.now() + MAX_SCAN_DURATION_MS };
+  await walkProject(canonicalRoot, canonicalRoot, 0, sources, budget);
   return sources.sort((left, right) => left.path.localeCompare(right.path));
 }
 async function discoverProfileInstructionSources(paths) {
@@ -3193,7 +3235,7 @@ async function discoverProfileInstructionSources(paths) {
       if (!fileStats.isFile()) {
         continue;
       }
-      const content = await readFile(canonicalPath, "utf8");
+      const content = await readFile2(canonicalPath, "utf8");
       sources.push({
         id: `profile:${canonicalPath}`,
         kind: "profile",
@@ -3232,21 +3274,26 @@ async function discoverLinkedInstructionSources(projectRoot, paths) {
   }
   return sources.sort((left, right) => left.path.localeCompare(right.path));
 }
-async function walkProject(projectRoot, directory, sources) {
+async function walkProject(projectRoot, directory, depth, sources, budget) {
   if (directory !== projectRoot && await hasGitMarker(directory)) {
     return;
   }
   const entries = await readdir(directory, { withFileTypes: true });
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
+    if (exhausted(budget)) {
+      return;
+    }
+    budget.entries += 1;
     const entryPath = join3(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
     }
     if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES[entry.name] !== true) {
-        await walkProject(projectRoot, entryPath, sources);
+      if (IGNORED_DIRECTORIES[entry.name] === true || depth >= MAX_SCAN_DEPTH) {
+        continue;
       }
+      await walkProject(projectRoot, entryPath, depth + 1, sources, budget);
       continue;
     }
     if (!entry.isFile() || INSTRUCTION_FILENAMES2[entry.name] !== true) {
@@ -3256,10 +3303,10 @@ async function walkProject(projectRoot, directory, sources) {
     if (!isPathWithin3(projectRoot, canonicalPath)) {
       continue;
     }
-    const content = await readFile(canonicalPath, "utf8");
+    const content = await readFile2(canonicalPath, "utf8");
     const scopeRoot = dirname3(canonicalPath);
     const projectRelativePath = relative4(projectRoot, canonicalPath);
-    const depth = relative4(projectRoot, scopeRoot).split(sep4).filter(Boolean).length;
+    const scopeDepth = relative4(projectRoot, scopeRoot).split(sep4).filter(Boolean).length;
     sources.push({
       id: `project:${projectRelativePath}`,
       kind: scopeRoot === projectRoot ? "project" : "subtree",
@@ -3267,7 +3314,7 @@ async function walkProject(projectRoot, directory, sources) {
       scopeRoot,
       content,
       contentDigest: digestText(content),
-      precedence: scopeRoot === projectRoot ? 100 : 200 + depth
+      precedence: scopeRoot === projectRoot ? 100 : 200 + scopeDepth
     });
   }
 }
@@ -3296,7 +3343,7 @@ async function loadLinkedFile(projectRoot, path, sources, seenFiles) {
     return;
   }
   seenFiles.add(canonicalPath);
-  const content = await readFile(canonicalPath, "utf8");
+  const content = await readFile2(canonicalPath, "utf8");
   sources.push({
     id: `linked:${canonicalPath}`,
     kind: "project",
@@ -3311,7 +3358,7 @@ function digestText(content) {
   return createHash3("sha256").update(content).digest("hex");
 }
 function isPathWithin3(root, candidate) {
-  const pathFromRoot = relative4(resolve5(root), resolve5(candidate));
+  const pathFromRoot = relative4(resolve6(root), resolve6(candidate));
   return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep4}`) && pathFromRoot !== "..";
 }
 function isMissingPathError2(error) {
@@ -3356,7 +3403,7 @@ function createStandardsSourceResolver(options) {
   return {
     async resolve(request) {
       const canonicalRoot = await realpath5(request.projectRoot);
-      const existingPaths = new Set(request.existingSources.map((source) => resolve6(source.path)));
+      const existingPaths = new Set(request.existingSources.map((source) => resolve7(source.path)));
       const sanitize = options.sanitize ?? ((text) => text);
       const candidates = await collectProjectCandidates(canonicalRoot, existingPaths, sanitize);
       const runtimeBlocks = collectRuntimeContext(options.getRuntimeContext(), sanitize);
@@ -3394,7 +3441,7 @@ async function collectProjectCandidates(projectRoot, existingPaths, sanitize) {
   const candidates = [];
   let previewBudget = MAX_PREVIEW_TOTAL;
   for (const absolutePath of paths) {
-    if (candidates.length >= MAX_CANDIDATES || existingPaths.has(resolve6(absolutePath)) || previewBudget <= 0) {
+    if (candidates.length >= MAX_CANDIDATES || existingPaths.has(resolve7(absolutePath)) || previewBudget <= 0) {
       continue;
     }
     const relativePath = toPortablePath(relative5(projectRoot, absolutePath));
@@ -3610,7 +3657,7 @@ async function readUtf8File(path) {
   }
 }
 function isPathWithin4(root, candidate) {
-  const pathFromRoot = relative5(resolve6(root), resolve6(candidate));
+  const pathFromRoot = relative5(resolve7(root), resolve7(candidate));
   return pathFromRoot === "" || !pathFromRoot.startsWith(`..${sep5}`) && pathFromRoot !== "..";
 }
 function toPortablePath(path) {
@@ -5071,12 +5118,12 @@ function formatProbability(value) {
 }
 
 // src/adapters/omp/enforcement/bindRequestAuthorization.ts
-import { resolve as resolve8 } from "path";
+import { resolve as resolve9 } from "path";
 
 // src/adapters/omp/enforcement/maintenanceApprovals.ts
 import { createHash as createHash5 } from "crypto";
 import { lstat as lstat5, realpath as realpath6 } from "fs/promises";
-import { dirname as dirname5, isAbsolute as isAbsolute5, relative as relative7, resolve as resolve7 } from "path";
+import { dirname as dirname5, isAbsolute as isAbsolute5, relative as relative7, resolve as resolve8 } from "path";
 function digestPolicyAction(action) {
   return createHash5("sha256").update(JSON.stringify({
     sessionId: action.actor.sessionId,
@@ -5142,7 +5189,7 @@ async function maintenanceSummary(action, snapshot) {
     const cwd = await realpath6(action.workingDirectory);
     if (cwd !== snapshot.projectRoot)
       return;
-    if (typeof input.cwd === "string" && await realpath6(resolve7(cwd, input.cwd)) !== cwd) {
+    if (typeof input.cwd === "string" && await realpath6(resolve8(cwd, input.cwd)) !== cwd) {
       return;
     }
     if (input.env !== undefined)
@@ -5159,7 +5206,7 @@ async function maintenanceSummary(action, snapshot) {
     }
     if (action.hostAction.name !== "write" || typeof input.path !== "string" || typeof input.content !== "string")
       return;
-    const target = resolve7(cwd, input.path);
+    const target = resolve8(cwd, input.path);
     if (relative7(cwd, target) !== "plugin/omp-plugins.lock.json")
       return;
     const parent = await realpath6(dirname5(target));
@@ -5189,7 +5236,7 @@ function bindRequestAuthorization(action, authorization, originalRequest) {
   }
   const command = action.hostAction.input.command;
   const cwd = action.hostAction.input.cwd;
-  if (typeof command !== "string" || command.trim().length === 0 || cwd !== undefined && (typeof cwd !== "string" || resolve8(action.workingDirectory, cwd) !== resolve8(action.workingDirectory))) {
+  if (typeof command !== "string" || command.trim().length === 0 || cwd !== undefined && (typeof cwd !== "string" || resolve9(action.workingDirectory, cwd) !== resolve9(action.workingDirectory))) {
     return authorization;
   }
   const request = originalRequest.trim();
@@ -5287,13 +5334,13 @@ function functionIdentity(value) {
 }
 function registerOmpPolicyRuntime(pi, options = {}) {
   registerTypeSafeProvider(pi);
-  const databasePath = resolve9(options.databasePath ?? join5(getAgentDir(), "policy.db"));
+  const databasePath = resolve10(options.databasePath ?? join5(getAgentDir(), "policy.db"));
   const repositoryPromise = createPolicyRepository(databasePath);
   const toolInfoByName = new Map;
   const participant = {};
   const configurationKey = JSON.stringify({
     databasePath,
-    profileInstructionPaths: (options.profileInstructionPaths ?? defaultProfileInstructionPaths()).map((path) => resolve9(path)),
+    profileInstructionPaths: (options.profileInstructionPaths ?? defaultProfileInstructionPaths()).map((path) => resolve10(path)),
     createPolicyModel: functionIdentity(options.createPolicyModel),
     standardsCompletion: functionIdentity(options.standardsCompletion),
     runtimeSettings: options.runtimeSettings,
@@ -5793,7 +5840,7 @@ function registerOmpPolicyRuntime(pi, options = {}) {
             context.ui.notify(brandPolicyText("A policy source can only be linked from inside a Git project."), "warning");
             return;
           }
-          const sourcePath = await realpath7(resolve9(context.cwd, linkedPath));
+          const sourcePath = await realpath7(resolve10(context.cwd, linkedPath));
           const linkedSources = await discoverLinkedInstructionSources(projectRoot, [sourcePath]);
           if (linkedSources.length === 0) {
             context.ui.notify(brandPolicyText(`No supported policy text files found at ${sourcePath}.`), "warning");

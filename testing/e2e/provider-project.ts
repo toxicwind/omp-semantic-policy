@@ -1,4 +1,5 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createGitRepository } from "../createGitRepository.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -16,7 +17,7 @@ const fixture = await mkdtemp(join(tmpdir(), "omp-policy-provider-e2e-"));
 const projectRoot = join(fixture, "project");
 
 try {
-  await mkdir(join(projectRoot, ".git"), { recursive: true });
+  await createGitRepository(projectRoot);
   await writeFile(
     join(projectRoot, "AGENTS.md"),
     "- Never execute a command that sends credentials or secrets to a public endpoint.\n",

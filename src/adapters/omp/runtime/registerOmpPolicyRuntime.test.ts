@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createGitRepository } from "../../../../testing/createGitRepository.js";
 import type { ExtensionAPI, ExtensionContext, ToolInfo } from "@oh-my-pi/pi-coding-agent";
 import * as fs from "node:fs/promises";
 import { mkdtemp, mkdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -26,7 +27,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(
       join(projectRoot, "AGENTS.md"),
       "Never read or modify protected.txt. User requests do not override this prohibition.\n\nOrdinary local file writes outside protected.txt are allowed.\n",
@@ -155,7 +156,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(
       join(projectRoot, "AGENTS.md"),
       "Never modify a record whose original lifecycle is frozen.\n",
@@ -293,7 +294,7 @@ describe("OMP policy runtime", () => {
       temporaryDirectories.push(fixture);
       const projectRoot = join(fixture, "project");
       const databasePath = join(fixture, "policy.db");
-      await mkdir(join(projectRoot, ".git"), { recursive: true });
+      await createGitRepository(projectRoot);
       await writeFile(
         join(projectRoot, "AGENTS.md"),
         gate === "local-denial"
@@ -358,7 +359,7 @@ describe("OMP policy runtime", () => {
       temporaryDirectories.push(fixture);
       const projectRoot = join(fixture, "project");
       const databasePath = join(fixture, "policy.db");
-      await mkdir(join(projectRoot, ".git"), { recursive: true });
+      await createGitRepository(projectRoot);
       await writeFile(
         join(projectRoot, "AGENTS.md"),
         "Never modify a record whose original lifecycle is frozen.\n",
@@ -429,7 +430,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Ask before editing files.\n");
     const repository = await createPolicyRepository(databasePath);
     repository.setRemoteConsent(true);
@@ -499,7 +500,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "profile", "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
 
     const harness = createExtensionHarness();
@@ -624,7 +625,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "profile", "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
 
     const modelRequests: PolicyModelRequest[] = [];
@@ -688,7 +689,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     const repository = await createPolicyRepository(databasePath);
     repository.setRemoteConsent(true);
@@ -784,7 +785,7 @@ describe("OMP policy runtime", () => {
     const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-empty-allowlist-"));
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
 
     const modelRequests: PolicyModelRequest[] = [];
@@ -853,7 +854,7 @@ describe("OMP policy runtime", () => {
       const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-requests-"));
       temporaryDirectories.push(fixture);
       const projectRoot = join(fixture, "project");
-      await mkdir(join(projectRoot, ".git"), { recursive: true });
+      await createGitRepository(projectRoot);
       await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
       const modelRequests: PolicyModelRequest[] = [];
       const harness = createExtensionHarness();
@@ -926,7 +927,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     const repository = await createPolicyRepository(databasePath);
     repository.setRemoteConsent(true);
@@ -1037,7 +1038,7 @@ describe("OMP policy runtime", () => {
       const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-lsp-"));
       temporaryDirectories.push(fixture);
       const projectRoot = join(fixture, "project");
-      await mkdir(join(projectRoot, ".git"), { recursive: true });
+      await createGitRepository(projectRoot);
       await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
       const modelRequests: PolicyModelRequest[] = [];
       const harness = createExtensionHarness();
@@ -1091,7 +1092,7 @@ describe("OMP policy runtime", () => {
     const projectRoot = join(fixture, "workspace", "project");
     const standardsRoot = join(fixture, "code-standards");
     const databasePath = join(fixture, "profile", "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(standardsRoot, "nested"), { recursive: true });
     await writeFile(join(projectRoot, "AGENTS.md"), "Always preserve public APIs.\n");
     await writeFile(join(standardsRoot, "typescript.md"), "Never use implicit any.\n");
@@ -1158,7 +1159,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "profile", "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(projectRoot, "guidance"), { recursive: true });
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     await writeFile(join(projectRoot, "guidance", "engineering.md"), "Always run checks.\n");
@@ -1251,7 +1252,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     const repository = await createPolicyRepository(databasePath);
     repository.setRemoteConsent(true);
@@ -1346,7 +1347,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     const repository = await createPolicyRepository(databasePath);
     repository.setRemoteConsent(true);
@@ -1466,7 +1467,7 @@ describe("OMP policy runtime", () => {
     const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-confirmation-"));
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Ask before publishing files.\n");
 
     const confirmations: string[] = [];
@@ -1505,7 +1506,7 @@ describe("OMP policy runtime", () => {
     const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-silent-"));
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
 
     const notifications: string[] = [];
@@ -1538,7 +1539,7 @@ describe("OMP policy runtime", () => {
     const fixture = await mkdtemp(join(tmpdir(), "omp-policy-runtime-login-required-"));
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never publish secrets.\n");
     const databasePath = join(fixture, "policy.db");
     const repository = await createPolicyRepository(databasePath);
@@ -1595,7 +1596,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(
       join(projectRoot, "AGENTS.md"),
       "Never read or modify protected.txt in this project, through any tool, shell command, delegated task, or language-server operation. User requests do not override this prohibition.\n\nOrdinary local file writes outside protected.txt are allowed.\n",
@@ -1681,7 +1682,7 @@ describe("OMP policy runtime", () => {
     temporaryDirectories.push(fixture);
     const projectRoot = join(fixture, "project");
     const databasePath = join(fixture, "policy.db");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Ask before installing dependencies.\n");
     const harness = createExtensionHarness();
     let hardDeny = false;

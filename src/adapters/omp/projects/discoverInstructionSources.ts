@@ -30,13 +30,39 @@ const LINKED_DIRECTORY_FILE_EXTENSIONS: Readonly<Record<string, true>> = {
   ".txt": true,
 };
 
+/**
+ * Budget for the project walk.
+ *
+ * A worktree is an arbitrary directory tree, and this walk runs on the
+ * critical path of `before_agent_start` and of every `tool_call`. Without a
+ * bound, a root with a large tree (a monorepo, or a home directory that some
+ * tool left a stub `.git` in) spends tens of seconds inside a handler that the
+ * host abandons at 30s. The walk therefore stops and returns what it found.
+ * Instruction files live near a root or a few levels down, so the depth cap
+ * costs nothing in practice; the entry and time caps only ever bite on roots
+ * that no human would expect to be scanned in full.
+ */
+const MAX_SCAN_DEPTH = 6;
+const MAX_SCAN_ENTRIES = 20_000;
+const MAX_SCAN_DURATION_MS = 2_000;
+
+interface ScanBudget {
+  entries: number;
+  readonly deadline: number;
+}
+
+function exhausted(budget: ScanBudget): boolean {
+  return budget.entries >= MAX_SCAN_ENTRIES || Date.now() >= budget.deadline;
+}
+
 /** Discover project instructions while excluding ancestors and nested repositories. */
 export async function discoverProjectInstructionSources(
   projectRoot: string,
 ): Promise<readonly InstructionSource[]> {
   const canonicalRoot = await realpath(projectRoot);
   const sources: InstructionSource[] = [];
-  await walkProject(canonicalRoot, canonicalRoot, sources);
+  const budget: ScanBudget = { entries: 0, deadline: Date.now() + MAX_SCAN_DURATION_MS };
+  await walkProject(canonicalRoot, canonicalRoot, 0, sources, budget);
   return sources.sort((left, right) => left.path.localeCompare(right.path));
 }
 
@@ -104,7 +130,9 @@ export async function discoverLinkedInstructionSources(
 async function walkProject(
   projectRoot: string,
   directory: string,
+  depth: number,
   sources: InstructionSource[],
+  budget: ScanBudget,
 ): Promise<void> {
   if (directory !== projectRoot && (await hasGitMarker(directory))) {
     return;
@@ -114,14 +142,19 @@ async function walkProject(
   entries.sort((left, right) => left.name.localeCompare(right.name));
 
   for (const entry of entries) {
+    if (exhausted(budget)) {
+      return;
+    }
+    budget.entries += 1;
     const entryPath = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       continue;
     }
     if (entry.isDirectory()) {
-      if (IGNORED_DIRECTORIES[entry.name] !== true) {
-        await walkProject(projectRoot, entryPath, sources);
+      if (IGNORED_DIRECTORIES[entry.name] === true || depth >= MAX_SCAN_DEPTH) {
+        continue;
       }
+      await walkProject(projectRoot, entryPath, depth + 1, sources, budget);
       continue;
     }
     if (!entry.isFile() || INSTRUCTION_FILENAMES[entry.name] !== true) {
@@ -135,7 +168,7 @@ async function walkProject(
     const content = await readFile(canonicalPath, "utf8");
     const scopeRoot = dirname(canonicalPath);
     const projectRelativePath = relative(projectRoot, canonicalPath);
-    const depth = relative(projectRoot, scopeRoot).split(sep).filter(Boolean).length;
+    const scopeDepth = relative(projectRoot, scopeRoot).split(sep).filter(Boolean).length;
     sources.push({
       id: `project:${projectRelativePath}`,
       kind: scopeRoot === projectRoot ? "project" : "subtree",
@@ -143,7 +176,7 @@ async function walkProject(
       scopeRoot,
       content,
       contentDigest: digestText(content),
-      precedence: scopeRoot === projectRoot ? 100 : 200 + depth,
+      precedence: scopeRoot === projectRoot ? 100 : 200 + scopeDepth,
     });
   }
 }

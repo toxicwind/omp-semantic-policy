@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createGitRepository } from "../../../../testing/createGitRepository.js";
 import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,7 +24,7 @@ describe("model-assisted standards discovery", () => {
     const projectRoot = join(fixture, "project");
     const standardsPath = join(projectRoot, "guidance", "engineering.md");
     const outsidePath = join(fixture, "outside.md");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(projectRoot, "guidance"), { recursive: true });
     await writeFile(
       standardsPath,
@@ -83,7 +84,7 @@ describe("model-assisted standards discovery", () => {
   test("keeps deterministic project sources when the configured model is unavailable", async () => {
     const fixture = await createFixture();
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(projectRoot, "guidance"), { recursive: true });
     await writeFile(join(projectRoot, "AGENTS.md"), "Never commit automatically.\n");
     await writeFile(join(projectRoot, "guidance", "engineering.md"), "Never bypass review.\n");
@@ -114,7 +115,7 @@ describe("model-assisted standards discovery", () => {
   test("defaults the scan budget below the host extension-handler timeout", async () => {
     const fixture = await createFixture();
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never commit automatically.\n");
 
     // The OMP host abandons an extension handler at 30s. A scan budget at or
@@ -141,7 +142,7 @@ describe("model-assisted standards discovery", () => {
   test("backs off after a scan times out instead of re-entering the model", async () => {
     const fixture = await createFixture();
     const projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await writeFile(join(projectRoot, "AGENTS.md"), "Never commit automatically.\n");
 
     let completionCount = 0;

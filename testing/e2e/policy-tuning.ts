@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext, ToolCallEvent } from "@oh-my-pi/pi-coding-agent";
+import { createGitRepository } from "../createGitRepository.js";
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
@@ -1129,7 +1130,7 @@ async function main(): Promise<number> {
     fixture = await mkdtemp(join(tmpdir(), "omp-policy-tuning-"));
     fixture = await realpath(fixture);
     projectRoot = join(fixture, "project");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(projectRoot, "plugin"));
     const fixtureFiles = await Promise.allSettled([
       writeFile(join(projectRoot, "AGENTS.md"), rules, { mode: 0o600 }),

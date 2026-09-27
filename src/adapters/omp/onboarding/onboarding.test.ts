@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { createGitRepository } from "../../../../testing/createGitRepository.js";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ describe("project onboarding", () => {
     temporaryDirectories.push(directory);
     const projectRoot = join(directory, "project");
     const sourcePath = join(projectRoot, "AGENTS.md");
-    await mkdir(join(projectRoot, ".git"), { recursive: true });
+    await createGitRepository(projectRoot);
     await mkdir(join(projectRoot, "src"), { recursive: true });
     await writeFile(sourcePath, "- Never commit automatically.\n");
     const repository = await createPolicyRepository(":memory:");
